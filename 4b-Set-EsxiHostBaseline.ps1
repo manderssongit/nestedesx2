@@ -9,9 +9,20 @@
     Cloud Builder bygger sen). Kor fran jumphosten pa pod-natet.
 
     Kravm: VCF.PowerCLI eller VMware.PowerCLI (loadern nedan tar den som finns).
+
+    Config-driven (rekommenderat): baslinje pa hela en host-grupp ur env-config.psd1:
+        .\4b-Set-EsxiHostBaseline.ps1 -Group mgmt -RootPw 'VMware1!'
 #>
 
-# --- PowerCLI-loader: ta den modul som finns, importera ALDRIG bada ---
+param(
+    [ValidateSet('mgmt','prod','test')][string]$Group,
+    [string]$RootPw = 'VMware1!',    # TODO: valvsecret
+    [string]$ConfigPath,
+    [string]$Template
+)
+
+# --- config-laddare + PowerCLI-loader: ta den modul som finns, importera ALDRIG bada ---
+. "$PSScriptRoot\Get-EnvConfig.ps1"
 if     (Get-Module -ListAvailable VCF.PowerCLI)    { Import-Module VCF.PowerCLI }
 elseif (Get-Module -ListAvailable VMware.PowerCLI) { Import-Module VMware.PowerCLI }
 else   { throw 'PowerCLI saknas - installera VCF.PowerCLI (PS 7.4+) eller VMware.PowerCLI.' }
@@ -82,18 +93,26 @@ function Set-EsxiHostBaseline {
 }
 
 # ------------------------------------------------------------------------------
-#  Exempel: loopa over hostarna du installerat for hand
+#  Config-driven korning: baslinje pa hela host-gruppen ur env-config.psd1
 # ------------------------------------------------------------------------------
-# $rootpw = 'VMware1!'
-# $hosts = @(
-#     @{ Ip='192.168.0.51'; Name='esx-mgmt01' }
-#     @{ Ip='192.168.0.52'; Name='esx-mgmt02' }
-#     @{ Ip='192.168.0.53'; Name='esx-mgmt03' }
-#     @{ Ip='192.168.0.54'; Name='esx-mgmt04' }
-#     @{ Ip='192.168.0.55'; Name='esx-mgmt05' }
-#     @{ Ip='192.168.0.56'; Name='esx-mgmt06' }
-# )
-# foreach ($x in $hosts) {
-#     Set-EsxiHostBaseline -HostAddress $x.Ip -RootPw $rootpw -ShortName $x.Name `
-#         -Domain infra.test -Dns 192.168.0.10 -Ntp 192.168.0.10 -InstallMockVib
-# }
+if ($Group) {
+    $cfg    = Get-EnvConfig -Path $ConfigPath -Template $Template
+    $domain = $cfg.adForest.infra.domain
+    $dns    = $cfg.adForest.infra.dnsServer
+    $ntp    = $cfg.adForest.infra.ntpServer
+    $vibUrl = $cfg.physicalEnv.mockVibUrl
+    Write-Host ("== Grupp {0}: {1} host, doman {2}, dns {3}, ntp {4} ==" -f `
+        $Group, $cfg.HostGroup($Group).Count, $domain, $dns, $ntp) -ForegroundColor Cyan
+    foreach ($h in $cfg.HostGroup($Group)) {
+        $esa = ($h.vsanMode -eq 'ESA')          # ESA -> installera vSAN-mock-VIB
+        Set-EsxiHostBaseline -HostAddress $h.ip -RootPw $RootPw -ShortName $h.name `
+            -Domain $domain -Dns $dns -Ntp $ntp -InstallMockVib:$esa -MockVibUrl $vibUrl
+    }
+    Write-Host "Grupp $Group klar. Nasta: 5-Test-EnvReadiness -Group $Group." -ForegroundColor Green
+}
+
+# ------------------------------------------------------------------------------
+#  Manuellt exempel (en host, utan config)
+# ------------------------------------------------------------------------------
+# Set-EsxiHostBaseline -HostAddress 192.168.0.51 -RootPw 'VMware1!' -ShortName esx-mgmt01 `
+#     -Domain infra.test -Dns 192.168.0.10 -Ntp 192.168.0.10 -InstallMockVib

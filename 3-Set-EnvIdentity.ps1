@@ -8,15 +8,26 @@
         New-AdvancedSetting -Entity $vm -Name guestinfo.envname -Value 'Aurora' -Force):
         .\3-Set-EnvIdentity.ps1
 #>
-param([string]$Name)
+param(
+    [string]$Name,          # friendly-namn; annars guestinfo.envname, annars config
+    [string]$DcFqdn,        # DC-FQDN for banner/desktop; annars ur config (dc.<infra-doman>)
+    [string]$ConfigPath,
+    [string]$Template
+)
 
-# --- 1) Kalla: guestinfo om -Name utelamnats (automatisk per-pod-identitet) ---
+# valfri config-fallback (om env-config.psd1 + Get-EnvConfig finns bredvid scriptet)
+$envCfg = $null
+try { . "$PSScriptRoot\Get-EnvConfig.ps1"; $envCfg = Get-EnvConfig -Path $ConfigPath -Template $Template 3>$null } catch { }
+
+# --- 1) Prioritet: -Name  >  guestinfo.envname  >  config ---
 if (-not $Name) {
     $vmtoolsd = 'C:\Program Files\VMware\VMware Tools\vmtoolsd.exe'
     if (Test-Path $vmtoolsd) { $Name = (& $vmtoolsd --cmd 'info-get guestinfo.envname' 2>$null).Trim() }
 }
-if (-not $Name) { throw 'Inget lab-namn. Ange -Name, eller satt guestinfo.envname pa VM:en.' }
-Write-Host "Satter lab-identitet: $Name"
+if (-not $Name -and $envCfg) { $Name = $envCfg.nestedEnv.friendlyName }   # sista fallback: config
+if (-not $Name) { throw 'Inget lab-namn. Ange -Name, satt guestinfo.envname, eller lagg env-config bredvid.' }
+if (-not $DcFqdn) { $DcFqdn = if ($envCfg) { "dc.$($envCfg.adForest.infra.domain)" } else { 'dc.infra.test' } }
+Write-Host "Satter lab-identitet: $Name  (DC: $DcFqdn)"
 
 # --- 2) Sanningskallan: maskin-env-var EnvName ---
 [Environment]::SetEnvironmentVariable('EnvName', $Name, 'Machine')
@@ -37,11 +48,11 @@ function prompt {
 # --- 4) Logon-banner (omissbar vid varje inloggning, aven RDP) ---
 $sys = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
 Set-ItemProperty $sys -Name legalnoticecaption -Value "ENV: $Name"
-Set-ItemProperty $sys -Name legalnoticetext    -Value "Inloggad pa miljo: $Name  (dc.infra.test)"
+Set-ItemProperty $sys -Name legalnoticetext    -Value "Inloggad pa miljo: $Name  ($DcFqdn)"
 
 # --- 5) Desktop-fil for alla anvandare (billig extra-cue) ---
 Get-ChildItem 'C:\Users\Public\Desktop\ENV - *.txt' -EA SilentlyContinue | Remove-Item -Force
-"ENV: $Name`r`nEnv-DC: dc.infra.test" | Set-Content "C:\Users\Public\Desktop\ENV - $Name.txt"
+"ENV: $Name`r`nEnv-DC: $DcFqdn" | Set-Content "C:\Users\Public\Desktop\ENV - $Name.txt"
 
 # --- 6) (valfritt) BGInfo: baka in namnet i wallpaper, syns aven over RDP ---
 #     Kraver Bginfo64.exe + en .bgi med ett custom-falt som laser env-var EnvName.

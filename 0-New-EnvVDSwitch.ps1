@@ -8,7 +8,14 @@
     OBS: separat fran SDDC Managers managed vDS - denna ar din egen, orord av VCF LCM.
 #>
 
-# --- PowerCLI-loader: ta den modul som finns, importera ALDRIG bada ---
+param(
+    [switch]$FromConfig,        # bygg vDS ur env-config.psd1 (physicalEnv)
+    [string]$ConfigPath,
+    [string]$Template
+)
+
+# --- config-laddare + PowerCLI-loader: ta den modul som finns, importera ALDRIG bada ---
+. "$PSScriptRoot\Get-EnvConfig.ps1"
 if     (Get-Module -ListAvailable VCF.PowerCLI)    { Import-Module VCF.PowerCLI }
 elseif (Get-Module -ListAvailable VMware.PowerCLI) { Import-Module VMware.PowerCLI }
 else   { throw 'PowerCLI saknas - installera VCF.PowerCLI (PS 7.4+) eller VMware.PowerCLI.' }
@@ -50,4 +57,12 @@ function New-EnvVDSwitch {
     Write-Host "Klar. '$Name' spanner $($VMHost.Count) hostar, host-lokal (inga uplinks), MTU $Mtu."
     Write-Host "Nasta: New-EnvPortGroup for trunk-portgruppen."
     return Get-VDSwitch -Name $Name
+}
+
+# --- config-driven korning: bygg vDS ur env-config.psd1 ---
+if ($FromConfig) {
+    $cfg = Get-EnvConfig -Path $ConfigPath -Template $Template
+    $mtu = ($cfg.network.vlans.PSObject.Properties.Value.mtu | Measure-Object -Maximum).Maximum
+    New-EnvVDSwitch -Name $cfg.physicalEnv.vdSwitch -Datacenter $cfg.physicalEnv.datacenter `
+        -VMHost $cfg.physicalEnv.physicalHosts -Mtu $mtu
 }

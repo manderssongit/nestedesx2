@@ -1,5 +1,4 @@
 <#
-    2-New-EnvPortGroup.ps1
     Nested-ESXi lab networking helpers for PowerCLI
     ------------------------------------------------
     - Set-VDSwitchMtu        : sätter MTU (jumbo) på en vDS via API
@@ -13,7 +12,22 @@
       * Anslut först:  Connect-VIServer <vcenter-eller-host>
 
     OBS: MAC learning-policyn finns inte i Set-VDPortgroup, därför API-vägen nedan.
+
+    Config-driven (rekommenderat): satt jumbo pa vDS:en och skapa env:ets trunk-PG:
+        .\2-New-EnvPortGroup.ps1 -FromConfig
 #>
+
+param(
+    [switch]$FromConfig,        # satt MTU + skapa trunk-PG ur env-config.psd1
+    [string]$ConfigPath,
+    [string]$Template
+)
+
+# --- config-laddare + PowerCLI-loader (fristaende korning: ladda modulen sjalv) ---
+. "$PSScriptRoot\Get-EnvConfig.ps1"
+if     (Get-Module -ListAvailable VCF.PowerCLI)    { Import-Module VCF.PowerCLI }
+elseif (Get-Module -ListAvailable VMware.PowerCLI) { Import-Module VMware.PowerCLI }
+else   { throw 'PowerCLI saknas - installera VCF.PowerCLI (PS 7.4+) eller VMware.PowerCLI.' }
 
 function Set-VDSwitchMtu {
     <#
@@ -101,12 +115,11 @@ function New-EnvPortGroup {
 }
 
 # ------------------------------------------------------------------
-# Exempel: sätt jumbo på vDS:en och skapa en trunk-PG per lab
+#  Config-driven: satt jumbo pa vDS:en och skapa env:ets trunk-PG
 # ------------------------------------------------------------------
-# Connect-VIServer vcenter.infra.test
-#
-# Set-VDSwitchMtu -VDSwitchName 'vds-lab' -Mtu 9000
-#
-# 1..4 | ForEach-Object {
-#     New-EnvPortGroup -VDSwitchName 'vds-lab' -Name ("Lab{0:D2}-Trunk" -f $_)
-# }
+if ($FromConfig) {
+    $cfg = Get-EnvConfig -Path $ConfigPath -Template $Template
+    $mtu = ($cfg.network.vlans.PSObject.Properties.Value.mtu | Measure-Object -Maximum).Maximum
+    Set-VDSwitchMtu  -VDSwitchName $cfg.physicalEnv.vdSwitch -Mtu $mtu
+    New-EnvPortGroup -VDSwitchName $cfg.physicalEnv.vdSwitch -Name $cfg.TrunkPg() | Out-Null
+}

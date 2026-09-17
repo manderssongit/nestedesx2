@@ -19,17 +19,19 @@ Löst kopplade steg. Varje steg är ett fristående script eller en manuell åtg
 
 ## Detaljer per steg
 
-**0 — Fysisk prep + vDS.** Fysiska VCF-hosten klar (VCF 5.2/ESXi 8 igång). Kör `New-EnvVDSwitch -Name nes-vds -Datacenter <dc> -VMHost phys01[,…] -Mtu 9000`. Skapar din egna unmanaged vDS utan uplinks (host-lokal), skild från SDDC Managers managed vDS.
+Alla stegscript läser sitt slice ur `env-config.psd1` via `Get-EnvConfig.ps1` (dot-source:as automatiskt). Namn följer configen: `prefix` + `friendlyName` → `nes-aurora-*`.
 
-**1 — Golden-AD (var ~90 dag).** På en ren Win2025-VM: `1-Initialize-EnvAD.ps1` (IP/rename → forest → DNS/NTP/CA `Infra-Root-CA`/lokal CDP/depot/pki). Stäng av, klona som mall. 90-dagarscykeln håller mallen patchad och färsk. Client-AD (`corp.test`, `Corp-Root-CA`) byggs med samma script + roll-parameter (fas 3).
+**0 — Fysisk prep + vDS.** Fysiska VCF-hosten klar (VCF 5.2/ESXi 8 igång). Kör `.\0-New-EnvVDSwitch.ps1 -FromConfig`. Läser `physicalEnv.vdSwitch/datacenter/physicalHosts` + max VLAN-MTU (9000). Skapar din egna unmanaged vDS utan uplinks (host-lokal), skild från SDDC Managers managed vDS.
 
-**2 — Portgroup.** `New-EnvPortGroup -VDSwitchName nes-vds -Name nes-<pod>-trunk` (trunk + MAC learning, host-lokal).
+**1 — Golden-AD (var ~90 dag).** På en ren Win2025-VM: `.\1-Initialize-EnvAD.ps1 -Role infra` (IP/rename → forest → DNS/NTP/CA/lokal CDP/depot/pki). Domän/NetBIOS/CA-namn/DNS/depot hämtas ur `adForest.infra` + `depot`. Stäng av, klona som mall. Client-AD byggs med samma script: `-Role corp` (`corp.test`, `Corp-Root-CA`). `-Role`/`-ConfigPath` persisteras i `params.json` så de överlever reboot:arna.
 
-**3 — Deploy AD.** Klona golden-mallen till podden (manuell vCenter-klon i steg-läge), lägg på trunk-portgruppen, starta. Sätt `guestinfo.envname` och kör `Set-EnvIdentity` för friendly name (prompt/banner/desktop). Gateway = DC (.10).
+**2 — Portgroup.** `.\2-New-EnvPortGroup.ps1 -FromConfig` (sätter jumbo på vDS:en + skapar `nes-aurora-trunk` med MAC learning, host-lokal).
 
-**4 — Deploy ESX (halvmanuellt).** Per host-grupp: `New-EsxiLabVM` (skapar VM, NVMe-diskar, monterar stock-ISO) → **installera ESXi för hand** på defaults, sätt IP i DCUI → `Set-EsxiHostBaseline` (SSH/NTP/DNS/vhv, ev. mock-VIB). Körs om per grupp: **mgmt (6, esx-mgmt01-06)**, **prod (3, esx-prod01-03)**, **test (3, esx-test01-03)**.
+**3 — Deploy AD.** Klona golden-mallen till env:et (manuell vCenter-klon i steg-läge), lägg på trunk-portgruppen, starta. Sätt `guestinfo.envname` och kör `.\3-Set-EnvIdentity.ps1` för friendly name (prompt/banner/desktop). Namn: `-Name` > `guestinfo.envname` > `nestedEnv.friendlyName` (config). Gateway = DC (.10).
 
-**5 — Verifiera.** `Test-EnvReadiness -Hosts <lista> -Dns 192.168.0.10` → grön/röd på DNS fwd+rev, NTP, SSH, diskantal, ev. VIB. Grinden före varje bringup/WLD.
+**4 — Deploy ESX (halvmanuellt).** Per host-grupp: `.\4a-New-EsxiLabVM.ps1 -Group mgmt -VMHost phys01 -PowerOn` (skapar VM:er `nes-aurora-esx-mgmt01…`, NVMe-diskar, stock-ISO ur configen) → **installera ESXi för hand** på defaults, sätt IP i DCUI → `.\4b-Set-EsxiHostBaseline.ps1 -Group mgmt` (SSH/NTP/DNS/vhv, mock-VIB om `vsanMode=ESA`). Körs om per grupp: **mgmt (6)**, **prod (3)**, **test (3)**.
+
+**5 — Verifiera.** `.\5-Test-EnvReadiness.ps1 -Group mgmt` → grön/röd på DNS fwd+rev, NTP, SSH, diskantal, ev. VIB. Host-lista/DNS/förväntat diskantal ur configen. Grinden före varje bringup/WLD.
 
 **6 — CB-spec.** Fyll Cloud Builders deployment-workbook (Excel/JSON) från DNS/IP-planen — mgmt-hostar, vcenter-mgmt, sddc, nsx-mgmt×3+vip, nät. Namnen MÅSTE matcha DNS exakt.
 
@@ -59,10 +61,11 @@ Poängen: nya fleet-tjänster i 9.1 blir **nya rader i tabellen**, inte en omskr
 
 ## Filer per steg
 
-- Steg 0: `0-New-EnvVDSwitch.ps1`
-- Steg 1: `1-Initialize-EnvAD.ps1` (+ `3-Set-EnvIdentity.ps1`)
-- Steg 2: `2-New-EnvPortGroup.ps1`
-- Steg 4: `4a-New-EsxiLabVM.ps1`, `4b-Set-EsxiHostBaseline.ps1`  (se `steglaget-esxi.md`)
-- Steg 5: `5-Test-EnvReadiness.ps1`
+- Gemensamt: `env-config.psd1` (källa), `Get-EnvConfig.ps1` (laddare + `Test-EnvConfig`/`Sync-EnvHostDns`), `env-config-viewer.html` (read-only vy)
+- Steg 0: `0-New-EnvVDSwitch.ps1 -FromConfig`
+- Steg 1: `1-Initialize-EnvAD.ps1 -Role infra|corp` (+ `3-Set-EnvIdentity.ps1`)
+- Steg 2: `2-New-EnvPortGroup.ps1 -FromConfig`
+- Steg 4: `4a-New-EsxiLabVM.ps1 -Group <g> -VMHost <h>`, `4b-Set-EsxiHostBaseline.ps1 -Group <g>`  (se `steglaget-esxi.md`)
+- Steg 5: `5-Test-EnvReadiness.ps1 -Group <g>`
 - Steg 8/9: `NestedEnv.psm1` (`Set-EnvFriendlyName`/`Sync-EnvName`), PowerVCF för WLD
 - Fas 3/4: `fas3-workload-nsx-design.md`
