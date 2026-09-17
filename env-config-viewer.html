@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nested-VCF config-viewer</title>
+<style>
+  :root{
+    --bg:#0f1720; --panel:#182430; --line:#2b3d4f; --fg:#e7eef5;
+    --mut:#8fa6ba; --acc:#4aa3ff; --chip:#24384a;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+    font:14px/1.5 "Segoe UI",system-ui,Arial,sans-serif}
+  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+    padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--line);
+    position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header h1 span{color:var(--acc)}
+  .badge{font-size:12px;padding:2px 10px;border-radius:12px;background:var(--chip);color:var(--mut)}
+  .grow{flex:1}
+  button{font-family:inherit;font-size:13px;color:var(--fg);background:#1e2c3a;
+    border:1px solid var(--line);border-radius:6px;padding:7px 12px;cursor:pointer}
+  button:hover{border-color:var(--acc)}
+  .layout{display:flex;min-height:calc(100vh - 55px)}
+  nav{display:flex;flex-direction:column;gap:2px;padding:12px 8px;
+    background:var(--panel);border-right:1px solid var(--line);min-width:150px}
+  nav button{text-align:left;background:transparent;border:none;border-radius:6px;
+    padding:8px 12px;color:var(--mut)}
+  nav button.active{background:#1e2c3a;color:var(--fg);font-weight:600}
+  nav button:hover{color:var(--fg)}
+  main{flex:1;padding:22px 28px;overflow:auto;max-width:1000px}
+  h2{font-size:16px;margin:0 0 4px}
+  .src{color:var(--mut);font-size:12px;margin:0 0 20px}
+  .src code{background:var(--chip);padding:1px 6px;border-radius:4px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    padding:14px 18px;margin-bottom:16px}
+  .card h3{margin:0 0 12px;font-size:13px;color:var(--acc);text-transform:uppercase;letter-spacing:.5px}
+  dl{display:grid;grid-template-columns:190px 1fr;gap:6px 16px;margin:0}
+  dt{color:var(--mut)}
+  dd{margin:0;font-variant-numeric:tabular-nums}
+  .chip{display:inline-block;background:var(--chip);border:1px solid var(--line);
+    border-radius:16px;padding:2px 10px;font-size:12px;margin:2px 4px 2px 0}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{color:var(--mut);font-weight:500;font-size:12px}
+  td{font-variant-numeric:tabular-nums}
+  .split2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+    padding:14px;overflow:auto;font:12px/1.45 "Cascadia Code",Consolas,monospace;color:#cfe0f0}
+  .note{color:var(--mut);font-size:12px;margin-top:8px}
+  @media(max-width:800px){.split2{grid-template-columns:1fr}dl{grid-template-columns:140px 1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Nested-VCF <span>config-viewer</span></h1>
+  <span class="badge" id="envbadge">–</span>
+  <div class="grow"></div>
+  <button onclick="document.getElementById('f').click()">Importera JSON…</button>
+  <input type="file" id="f" accept=".json" style="display:none" onchange="imp(event)">
+</header>
+
+<div class="layout">
+  <nav id="tabs"></nav>
+  <main id="main"></main>
+</div>
+
+<script>
+/* Read-only vy. Kalla = env-config.psd1. Denna fil ager ingenting:
+   mata in farska varden med  Export-EnvConfigJson $cfg -Path env-config.json
+   och klicka "Importera JSON". Nedan ligger bara en snapshot for direktvisning. */
+const SNAPSHOT = {
+  nestedEnv:{ friendlyName:"Aurora", prefix:"nes-", parentFolder:"nested" },
+  physicalEnv:{ wldVCenter:"vcenter-wld.fabric", datacenter:"DC-WLD",
+    physicalHosts:["phys01","phys02","phys03"], vdSwitch:"nes-vds", datastore:"wld-vsan",
+    storagePolicy:"Env-FTT0-Thin", contentLibrary:"nes-iso", baseIso:"ESXi-8.0U3", esxiVersion:"8",
+    guestIdMap:{ "8":"vmkernel8Guest", "9":"vmkernel9Guest" },
+    mockVibUrl:"http://depot.infra.test/vibs/nested-vsan-esa-mock-hw_7x8x.zip" },
+  network:{
+    mgmt:{ subnet:"192.168.0.0/24", gateway:"192.168.0.10", netmask:"255.255.255.0", reverseZone:"0.168.192.in-addr.arpa", mtu:1500 },
+    vlans:{
+      vmotion:{ id:20, subnet:"192.168.20.0/24", mtu:9000, pools:{ mgmt:"11-30", prod:"31-50", test:"51-70" } },
+      vsan:{ id:30, subnet:"192.168.30.0/24", mtu:9000, pools:{ mgmt:"11-30", prod:"31-50", test:"51-70" } },
+      hostTep:{ id:40, subnet:"192.168.40.0/24", mtu:9000, pools:{ mgmt:"11-40", prod:"41-70", test:"71-100" } },
+      edgeTep:{ id:50, subnet:"192.168.50.0/24", mtu:9000, pools:{ prod:"11-30", test:"31-50" } }
+    },
+    overlay:{ supernet:"172.16.0.0/12", prod:"172.16.0.0/16", test:"172.17.0.0/16" }
+  },
+  adForest:{
+    infra:{ role:"infra", domain:"infra.test", netbios:"INFRA", dcIp:"192.168.0.10", caName:"Infra-Root-CA", caValidityYrs:20, pkiHostname:"pki", ntpServer:"192.168.0.10", dnsServer:"192.168.0.10" },
+    corp:{ role:"client", domain:"corp.test", netbios:"CORP", dcIp:"172.16.1.10", caName:"Corp-Root-CA", caValidityYrs:20, pkiHostname:"pki", ntpServer:"172.16.1.10", dnsServer:"172.16.1.10" }
+  },
+  depot:{ root:"C:\\depot", fqdn:"depot", httpsPort:443, certMode:"CA",
+    mimeExts:[".sig",".vib",".manifest",".json",".xml",".zip",".gz",".cfg"] },
+  hostGroups:{
+    mgmt:{ prefix:"esx-mgmt", count:6, startIp:51, size:"Medium", vsanMode:"ESA" },
+    prod:{ prefix:"esx-prod", count:3, startIp:81, size:"Medium", vsanMode:"ESA" },
+    test:{ prefix:"esx-test", count:3, startIp:111, size:"Medium", vsanMode:"ESA" }
+  },
+  hostSizes:{
+    Small:{ vCPU:8, memGB:24, bootGB:32, cacheGB:0, capGB:0, capDisks:0 },
+    Medium:{ vCPU:8, memGB:48, bootGB:32, cacheGB:80, capGB:200, capDisks:1 },
+    Large:{ vCPU:12, memGB:96, bootGB:32, cacheGB:120, capGB:400, capDisks:2 }
+  },
+  dns:[
+    {name:"gw",ip:"192.168.0.10",zone:"infra"},{name:"dc",ip:"192.168.0.10",zone:"infra"},
+    {name:"pki",ip:"192.168.0.10",zone:"infra"},{name:"depot",ip:"192.168.0.10",zone:"infra"},
+    {name:"ntp",ip:"192.168.0.10",zone:"infra"},{name:"jump",ip:"192.168.0.11",zone:"infra"},
+    {name:"cb",ip:"192.168.0.20",zone:"infra"},{name:"vcenter-mgmt",ip:"192.168.0.30",zone:"infra"},
+    {name:"sddc",ip:"192.168.0.31",zone:"infra"},{name:"nsx-mgmt-vip",ip:"192.168.0.40",zone:"infra"},
+    {name:"nsx-mgmt01",ip:"192.168.0.41",zone:"infra"},{name:"nsx-mgmt02",ip:"192.168.0.42",zone:"infra"},
+    {name:"nsx-mgmt03",ip:"192.168.0.43",zone:"infra"},{name:"esx-mgmt01",ip:"192.168.0.51",zone:"infra"},
+    {name:"esx-mgmt02",ip:"192.168.0.52",zone:"infra"},{name:"esx-mgmt03",ip:"192.168.0.53",zone:"infra"},
+    {name:"esx-mgmt04",ip:"192.168.0.54",zone:"infra"},{name:"esx-mgmt05",ip:"192.168.0.55",zone:"infra"},
+    {name:"esx-mgmt06",ip:"192.168.0.56",zone:"infra"},{name:"vcenter-prod",ip:"192.168.0.60",zone:"infra"},
+    {name:"nsx-prod-vip",ip:"192.168.0.70",zone:"infra"},{name:"nsx-prod01",ip:"192.168.0.71",zone:"infra"},
+    {name:"nsx-prod02",ip:"192.168.0.72",zone:"infra"},{name:"nsx-prod03",ip:"192.168.0.73",zone:"infra"},
+    {name:"esx-prod01",ip:"192.168.0.81",zone:"infra"},{name:"esx-prod02",ip:"192.168.0.82",zone:"infra"},
+    {name:"esx-prod03",ip:"192.168.0.83",zone:"infra"},{name:"vcenter-test",ip:"192.168.0.90",zone:"infra"},
+    {name:"nsx-test-vip",ip:"192.168.0.100",zone:"infra"},{name:"nsx-test01",ip:"192.168.0.101",zone:"infra"},
+    {name:"nsx-test02",ip:"192.168.0.102",zone:"infra"},{name:"nsx-test03",ip:"192.168.0.103",zone:"infra"},
+    {name:"esx-test01",ip:"192.168.0.111",zone:"infra"},{name:"esx-test02",ip:"192.168.0.112",zone:"infra"},
+    {name:"esx-test03",ip:"192.168.0.113",zone:"infra"}
+  ]
+};
+
+let cfg = SNAPSHOT, live = false;
+let tab = "env";
+const TABS = [["env","Nested env"],["targets","Fysisk env"],["network","Nätverk"],["realms","AD-forest"],
+  ["depot","Depot"],["hostGroups","Host-grupper"],["sizes","Host-storlekar"],["dns","DNS"],["json","Rå JSON"]];
+
+const esc = s => String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+const kv = obj => `<dl>`+Object.entries(obj).map(([k,v])=>`<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")+`</dl>`;
+const card = (t,inner) => `<div class="card"><h3>${esc(t)}</h3>${inner}</div>`;
+const chips = arr => arr.map(x=>`<span class="chip">${esc(x)}</span>`).join("");
+const mgmtBase = () => { const o=cfg.network.mgmt.subnet.split("/")[0].split("."); return `${o[0]}.${o[1]}.${o[2]}`; };
+const envSlug = () => cfg.nestedEnv.friendlyName.toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"");
+const envStem = () => `${cfg.nestedEnv.prefix}${envSlug()}`;
+
+function render(){
+  const nav=document.getElementById("tabs"); nav.innerHTML="";
+  TABS.forEach(([id,name])=>{ const b=document.createElement("button");
+    b.textContent=name; if(id===tab)b.className="active"; b.onclick=()=>{tab=id;render();}; nav.appendChild(b); });
+  document.getElementById("envbadge").textContent=(live?"":"snapshot · ")+`${cfg.nestedEnv.friendlyName} · ${envStem()}`;
+  const m=document.getElementById("main");
+  const srcline=`<p class="src">Källa: <code>env-config.psd1</code> · ${live?"importerad JSON":"inbäddad snapshot — klicka <b>Importera JSON</b> för färska värden"}</p>`;
+  m.innerHTML = ({env:vEnv,targets:vTargets,network:vNet,realms:vRealms,depot:vDepot,
+    hostGroups:vHosts,sizes:vSizes,dns:vDns,json:vJson}[tab])(srcline);
+}
+
+function vEnv(s){
+  const derived={ "slug (härledd)":envSlug(), "objekt-stam":envStem(), "trunk-portgroup":envStem()+"-trunk", "exempel-VM":envStem()+"-esx-mgmt01" };
+  return `<h2>Nested env</h2>`+s+card("Miljö (nestedEnv)",kv(cfg.nestedEnv))+card("Härledda namn (prefix + friendlyName)",kv(derived));
+}
+
+function vTargets(s){
+  const t=cfg.physicalEnv;
+  const base={ wldVCenter:t.wldVCenter, datacenter:t.datacenter, vdSwitch:t.vdSwitch, datastore:t.datastore,
+    storagePolicy:t.storagePolicy, contentLibrary:t.contentLibrary, baseIso:t.baseIso, esxiVersion:t.esxiVersion, mockVibUrl:t.mockVibUrl };
+  const gid=Object.entries(t.guestIdMap).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join("");
+  return `<h2>Fysisk env <span class="badge">underliggande VCF/WLD</span></h2>`+s+
+    card("WLD-mål (physicalEnv)",kv(base))+
+    card("Fysiska hostar (affinity)",chips(t.physicalHosts))+
+    card("guestIdMap",`<table><thead><tr><th>esxiVersion</th><th>GuestId</th></tr></thead><tbody>${gid}</tbody></table>`);
+}
+
+function vNet(s){
+  const v=cfg.network.vlans;
+  const rows=Object.keys(v).map(k=>{const p=v[k].pools||{};
+    return `<tr><td><b>${esc(k)}</b></td><td>${v[k].id}</td><td>${esc(v[k].subnet)}</td><td>${v[k].mtu}</td>
+      <td>${esc(p.mgmt||"–")}</td><td>${esc(p.prod||"–")}</td><td>${esc(p.test||"–")}</td></tr>`;}).join("");
+  return `<h2>Nätverk</h2>`+s+
+    card("Management",kv(cfg.network.mgmt))+
+    card("VLAN / transport",`<table><thead><tr><th>VLAN</th><th>id</th><th>subnet</th><th>mtu</th><th>pool mgmt</th><th>pool prod</th><th>pool test</th></tr></thead><tbody>${rows}</tbody></table>`)+
+    card("Overlay (nested)",kv(cfg.network.overlay));
+}
+
+function vRealms(s){
+  const c=k=>card(`${k} — ${cfg.adForest[k].domain}`,kv(cfg.adForest[k]));
+  return `<h2>AD-forest</h2>`+s+`<div class="split2">${c("infra")}${c("corp")}</div>`;
+}
+
+function vDepot(s){
+  const d=cfg.depot; const base={root:d.root,fqdn:d.fqdn,httpsPort:d.httpsPort,certMode:d.certMode};
+  return `<h2>Depot</h2>`+s+card("Offline depot",kv(base))+card("MIME-tillägg",chips(d.mimeExts));
+}
+
+function vHosts(s){
+  const g=cfg.hostGroups; const base=mgmtBase();
+  const rows=Object.keys(g).map(k=>{const x=g[k];
+    const first=`${base}.${x.startIp}`, last=`${base}.${x.startIp+x.count-1}`;
+    return `<tr><td><b>${esc(k)}</b></td><td>${esc(x.prefix)}</td><td>${x.count}</td><td>${x.startIp}</td>
+      <td>${esc(x.size)}</td><td>${esc(x.vsanMode)}</td><td>${esc(x.prefix)}01…${String(x.count).padStart(2,"0")} · ${first}…${last.split(".").pop()}</td></tr>`;}).join("");
+  // expanderad host-lista
+  let hostRows="";
+  Object.keys(g).forEach(k=>{const x=g[k];
+    for(let i=1;i<=x.count;i++){const n=`${x.prefix}${String(i).padStart(2,"0")}`;
+      hostRows+=`<tr><td>${esc(envStem())}-${esc(n)}</td><td>${esc(n)}</td><td>${base}.${x.startIp+i-1}</td><td>${esc(n)}.${esc(cfg.adForest.infra.domain)}</td><td>${esc(x.size)}</td></tr>`;}});
+  return `<h2>Host-grupper</h2>`+s+
+    card("Grupper",`<table><thead><tr><th>grupp</th><th>prefix</th><th>antal</th><th>startIp</th><th>size</th><th>vSAN</th><th>preview</th></tr></thead><tbody>${rows}</tbody></table>`)+
+    card("Alla hostar",`<table><thead><tr><th>VM-namn (vCenter)</th><th>host</th><th>ip</th><th>fqdn</th><th>size</th></tr></thead><tbody>${hostRows}</tbody></table>`);
+}
+
+function vSizes(s){
+  const cols=["vCPU","memGB","bootGB","cacheGB","capGB","capDisks"];
+  const rows=Object.keys(cfg.hostSizes).map(n=>`<tr><td><b>${esc(n)}</b></td>`+cols.map(c=>`<td>${cfg.hostSizes[n][c]}</td>`).join("")+`</tr>`).join("");
+  return `<h2>Host-storlekar</h2>`+s+card("hostSizes",`<table><thead><tr><th>size</th>${cols.map(c=>`<th>${c}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table>`);
+}
+
+function vDns(s){
+  const rows=cfg.dns.map(r=>`<tr><td>${esc(r.name)}</td><td>${esc(r.ip)}</td><td>${esc(r.zone)}</td><td>${esc(r.name)}.${esc((cfg.adForest[r.zone]||{}).domain||r.zone)}</td></tr>`).join("");
+  return `<h2>DNS <span class="badge">${cfg.dns.length} poster</span></h2>`+s+
+    card("Poster",`<table><thead><tr><th>namn</th><th>ip</th><th>zon</th><th>FQDN</th></tr></thead><tbody>${rows}</tbody></table>`);
+}
+
+function vJson(s){ return `<h2>Rå JSON</h2>`+s+`<pre>${esc(JSON.stringify(cfg,null,2))}</pre>`; }
+
+function imp(ev){
+  const f=ev.target.files[0]; if(!f)return; const r=new FileReader();
+  r.onload=()=>{ try{ cfg=JSON.parse(r.result); live=true; render(); }
+    catch(e){ alert("Kunde inte läsa JSON: "+e.message); } };
+  r.readAsText(f); ev.target.value="";
+}
+
+render();
+</script>
+</body>
+</html>
